@@ -1,0 +1,9 @@
+[submodule "modules/spdlog"]
+	path = modules/spdlog
+	url = https://github.com/gabime/spdlog.git
+[submodule "modules/linuxpe"]
+	path = modules/linuxpe
+	url = https://github.com/can1357/linux-pe.git
+[submodule "modules/phnt"]
+	path = modules/phnt
+	url = https://github.com/processhacker/phnt.git
