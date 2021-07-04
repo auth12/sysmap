@@ -154,7 +154,19 @@ namespace process {
 			return ret;
 		}
 
-		NTSTATUS close(HANDLE handle) {
+		NTSTATUS create_thread(uintptr_t start, HANDLE *out) {
+			static auto nt_create = g_syscalls.get<decltype(&NtCreateThreadEx)>("NtCreateThreadEx");
+
+			return nt_create(out, THREAD_ALL_ACCESS, nullptr, handle, reinterpret_cast<LPTHREAD_START_ROUTINE>(start), 0, 0x4, 0, 0, 0, 0);
+		}
+
+		NTSTATUS wait(HANDLE h) {
+			static auto nt_wait = g_syscalls.get<decltype(&NtWaitForSingleObject)>("NtWaitForSingleObject");
+
+			return nt_wait(h, false, nullptr);
+		}
+
+		static NTSTATUS close(HANDLE handle) {
 			static auto nt_close = g_syscalls.get<decltype(&NtClose)>("NtClose");
 
 			auto ret = nt_close(handle);
@@ -448,7 +460,9 @@ namespace process {
 
 			write(shellcode_base, shellcode.data(), shellcode.size());
 
-			CreateRemoteThread(handle, 0, 0, (LPTHREAD_START_ROUTINE)shellcode_base, 0, 0, 0);
+			HANDLE thread_handle;
+			create_thread(shellcode_base, &thread_handle);
+			wait(thread_handle);
 
 			io::log<log_lvl::info>("mapped target image");
 

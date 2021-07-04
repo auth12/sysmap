@@ -43,6 +43,8 @@ int main(int argc, char* argv[]) {
 
 	g_syscalls.init();
 
+	io::log<info>("waiting for {}", args[0]);
+
 	process::process_x64_t proc;
 	if (NT_SUCCESS(proc.attach(args[0]))) {
 		io::log<info>("attached!");
