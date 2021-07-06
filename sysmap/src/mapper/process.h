@@ -2,9 +2,60 @@
 
 
 namespace process {
+	struct thread_t {
+		SYSTEM_THREAD_INFORMATION info;
+		HANDLE handle;
+
+		NTSTATUS open() {
+			static auto nt_open_thread = g_syscalls.get<decltype(&NtOpenThread)>("NtOpenThread");
+			CLIENT_ID cid;
+			cid.UniqueProcess = 0;
+			cid.UniqueThread = info.ClientId.UniqueThread;
+
+			OBJECT_ATTRIBUTES oa;
+			oa.Length = sizeof(oa);
+			oa.Attributes = 0;
+			oa.RootDirectory = 0;
+			oa.SecurityDescriptor = 0;
+			oa.ObjectName = 0;
+			oa.SecurityQualityOfService = 0;
+
+			auto ret = nt_open_thread(&handle, THREAD_ALL_ACCESS, &oa, &cid);
+
+			io::log<debug>("NtOpenThread on {}, returned {:x}.", uintptr_t(cid.UniqueThread), ret & 0xFFFFFFFF);
+
+			return ret;
+		}
+
+		NTSTATUS suspend() {
+			static auto nt_suspend = g_syscalls.get<decltype(&NtSuspendThread)>("NtSuspendThread");
+
+			return nt_suspend(handle, nullptr);
+		}
+
+		NTSTATUS resume() {
+			static auto nt_resume = g_syscalls.get<decltype(&NtResumeThread)>("NtResumeThread");
+
+			return nt_resume(handle, nullptr);
+		}
+
+		NTSTATUS get_ctx(CONTEXT* out) {
+			static auto nt_get_ctx = g_syscalls.get<decltype(&NtGetContextThread)>("NtGetContextThread");
+
+			return nt_get_ctx(handle, out);
+		}
+
+		NTSTATUS set_ctx(CONTEXT *ctx) {
+			static auto nt_set_ctx = g_syscalls.get<decltype(&NtSetContextThread)>("NtSetContextThread");
+
+			return nt_set_ctx(handle, ctx);
+		}
+	};
+
 	struct process_info_t {
 		std::string name;
 		u16 pid;
+		std::vector<thread_t> threads;
 	};
 
 	struct process_iterator {
@@ -49,7 +100,19 @@ namespace process {
 				continue;
 			}
 
-			out.emplace_back(process_info_t{ util::to_multibyte(s), reinterpret_cast<u16>(pi->UniqueProcessId) });
+			process_info_t ret;
+			ret.name = util::to_multibyte(s);
+			ret.pid = PtrToUshort(pi->UniqueProcessId);
+
+			auto ti = reinterpret_cast<SYSTEM_THREAD_INFORMATION*>(pi->Threads);
+			for (int i = 0; i < pi->NumberOfThreads; i++) {
+				thread_t t;
+				std::memcpy(&t.info, &ti[i], sizeof(SYSTEM_THREAD_INFORMATION));
+
+				ret.threads.emplace_back(t);
+			}
+
+			out.emplace_back(std::move(ret));
 
 			ptr = iter.get_next();
 		}
@@ -63,9 +126,12 @@ namespace process {
 
 		std::vector<util::module_data_t> modules;
 
-		NTSTATUS open_handle() {
+		NTSTATUS open() {
 			static auto nt_open = g_syscalls.get<decltype(&NtOpenProcess)>("NtOpenProcess");
-			CLIENT_ID cid = { HANDLE(info.pid), 0 };
+			CLIENT_ID cid;
+			cid.UniqueProcess = HANDLE(info.pid);
+			cid.UniqueThread = 0;
+
 			OBJECT_ATTRIBUTES oa;
 			oa.Length = sizeof(oa);
 			oa.Attributes = 0;
@@ -99,7 +165,7 @@ namespace process {
 
 			info = *it;
 
-			return open_handle();
+			return open();
 		}
 
 		NTSTATUS read(uintptr_t addr, void* buf, size_t size) {
@@ -160,7 +226,7 @@ namespace process {
 			return nt_create(out, THREAD_ALL_ACCESS, nullptr, handle, reinterpret_cast<LPTHREAD_START_ROUTINE>(start), 0, 0x4, 0, 0, 0, 0);
 		}
 
-		NTSTATUS wait(HANDLE h) {
+		static NTSTATUS wait(HANDLE h) {
 			static auto nt_wait = g_syscalls.get<decltype(&NtWaitForSingleObject)>("NtWaitForSingleObject");
 
 			return nt_wait(h, false, nullptr);
@@ -446,12 +512,14 @@ namespace process {
 				return {};
 			}
 
-			static std::vector<u8> shellcode = { 0x48, 0x83, 0xEC, 0x28, 0x48, 0xB9, 0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC2,0x01, 0x00, 0x00, 0x00, 0x4D, 0x31, 0xC0,
-				0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xD0, 0x48, 0x83, 0xC4, 0x28, 0xC3 };
+			std::vector<u8> shellcode = { 0x9C, 0x50, 0x53, 0x51, 0x52, 0x55, 0x56, 0x57, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC,
+			0x28, 0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x4D, 0x31, 0xC0, 0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
+			0xD0, 0x48, 0x83, 0xC4, 0x28, 0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5F, 0x5E, 0x5D, 0x5A, 0x59, 0x5B, 0x58, 0x9D, 0xc3 };
 
-			*reinterpret_cast<u64*>(&shellcode[6]) = allocation_base;
-			*reinterpret_cast<u64*>(&shellcode[26]) = allocation_base + nt->optional_header.entry_point - headers_size;
+			*reinterpret_cast<u64*>(&shellcode[30]) = allocation_base;
+			*reinterpret_cast<u64*>(&shellcode[50]) = allocation_base + nt->optional_header.entry_point - headers_size;
+
+			io::log<debug>("entry {:x}", allocation_base + nt->optional_header.entry_point - headers_size);
 
 			uintptr_t shellcode_base;
 			alloc(&shellcode_base, shellcode.size(), MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
@@ -460,9 +528,29 @@ namespace process {
 
 			write(shellcode_base, shellcode.data(), shellcode.size());
 
-			HANDLE thread_handle;
-			create_thread(shellcode_base, &thread_handle);
-			wait(thread_handle);
+			for (auto& t : info.threads) {
+				if (t.info.ThreadState == Waiting) {
+					io::log<log_lvl::info>("found viable thread {}, hijacking...", uintptr_t(t.info.ClientId.UniqueThread));
+
+					CONTEXT ctx;
+					ctx.ContextFlags = CONTEXT_FULL;
+
+					t.open();
+					t.suspend();
+					t.get_ctx(&ctx);
+
+					io::log<debug>("thread RIP: {:x}", ctx.Rip);
+					io::log<debug>("thread stack pointer: {:x}", ctx.Rsp);
+
+					ctx.Rip = shellcode_base;
+
+					t.set_ctx(&ctx);
+					t.resume();
+
+					close(t.handle);
+					break;
+				}
+			}
 
 			io::log<log_lvl::info>("mapped target image");
 

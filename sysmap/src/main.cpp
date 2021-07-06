@@ -24,16 +24,19 @@ int main(int argc, char* argv[]) {
 
 	if (args.size() < 2) {
 		io::log<critical>("Invalid arguments specified.");
+		std::cin.get();
+
 		return 0;
 	}
-
-	spdlog::set_pattern("[%^%l%$] %v");
 
 	for (auto& arg : args) {
 		if (arg == "--debug") {
 			spdlog::set_level(spdlog::level::debug);
 		}
 	}
+
+	spdlog::set_pattern("[%^%l%$] %v");
+	spdlog::set_level(spdlog::level::debug);
 
 	g_ctx.local_modules = std::move(util::get_modules());
 
@@ -45,13 +48,21 @@ int main(int argc, char* argv[]) {
 
 	io::log<info>("waiting for {}", args[0]);
 
+	auto buf = io::read_file(args[1]);
+	if (buf.empty()) {
+		io::log<critical>("failed to read file.");
+		std::cin.get();
+
+		return 0;
+	}
+
 	process::process_x64_t proc;
 	if (NT_SUCCESS(proc.attach(args[0]))) {
 		io::log<info>("attached!");
 
 		proc.modules = proc.get_modules();
 
-		proc.map(io::read_file(args[1]));
+		proc.map(buf);
 
 		proc.close(proc.handle);
 	}
