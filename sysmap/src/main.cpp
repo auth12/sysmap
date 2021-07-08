@@ -18,25 +18,22 @@ apiset_t g_apiset;
 int main(int argc, char* argv[]) {
 	std::vector<std::string> args;
 	
+	spdlog::set_pattern("[%^+%$] %v");
+
 	for (int i = 1; i < argc; ++i) {
 		args.emplace_back(argv[i]);
 	}
 
 	if (args.size() < 2) {
 		io::log<critical>("Invalid arguments specified.");
-		std::cin.get();
-
 		return 0;
 	}
 
 	for (auto& arg : args) {
-		if (arg == "--debug") {
+		if (arg == "-v") {
 			spdlog::set_level(spdlog::level::debug);
 		}
 	}
-
-	spdlog::set_pattern("[%^%l%$] %v");
-	spdlog::set_level(spdlog::level::debug);
 
 	g_ctx.local_modules = std::move(util::get_modules());
 
@@ -51,8 +48,6 @@ int main(int argc, char* argv[]) {
 	auto buf = io::read_file(args[1]);
 	if (buf.empty()) {
 		io::log<critical>("failed to read file.");
-		std::cin.get();
-
 		return 0;
 	}
 
@@ -68,5 +63,6 @@ int main(int argc, char* argv[]) {
 	}
 
 	std::cin.get();
-	return 0;
+
+	return 1;
 }

@@ -168,6 +168,17 @@ namespace process {
 			return open();
 		}
 
+		NTSTATUS free(uintptr_t addr, size_t size) {
+			static auto nt_free = g_syscalls.get<decltype(&NtFreeVirtualMemory)>("NtFreeVirtualMemory");
+
+			auto addr_cast = reinterpret_cast<void*>(addr);
+			auto ret = nt_free(handle, &addr_cast, &size, MEM_DECOMMIT);
+
+			io::log<debug>("NtFreeVirtualMemory at {:x}, size 0x{:x}, returned {:x}.", addr, size, ret & 0xFFFFFFFF);
+
+			return ret;
+		}
+
 		NTSTATUS read(uintptr_t addr, void* buf, size_t size) {
 			static auto nt_read = g_syscalls.get<decltype(&NtReadVirtualMemory)>("NtReadVirtualMemory");
 
@@ -182,7 +193,7 @@ namespace process {
 			static auto nt_write = g_syscalls.get<decltype(&NtWriteVirtualMemory)>("NtWriteVirtualMemory");
 
 			auto ret = nt_write(handle, reinterpret_cast<void*>(addr), buf, size, nullptr);
-			io::log<debug>("NtWriteVirtualMemory at {:x}, buf {:x}, size {:x}, returned {:x}.", addr, uintptr_t(buf), size, ret & 0xFFFFFFFF);
+			io::log<debug>("NtWriteVirtualMemory at {:x}, buf {:x}, size 0x{:x}, returned {:x}.", addr, uintptr_t(buf), size, ret & 0xFFFFFFFF);
 
 			return ret;
 		}
@@ -193,7 +204,7 @@ namespace process {
 			void* addr_cast = reinterpret_cast<void*>(addr);
 			auto ret = nt_protect(handle, &addr_cast, &size, new_protection, (PULONG)old_protection);
 
-			io::log<debug>("NtProtectVirtualMemory at {:x}, size {:x}, new_protection {:x}, old_protection {:x}, returned {:x}.", addr, size, new_protection, *old_protection, ret & 0xFFFFFFFF);
+			io::log<debug>("NtProtectVirtualMemory at {:x}, size 0x{:x}, new_protection {:x}, old_protection {:x}, returned {:x}.", addr, size, new_protection, *old_protection, ret & 0xFFFFFFFF);
 
 			return ret;
 		}
@@ -514,17 +525,24 @@ namespace process {
 
 			std::vector<u8> shellcode = { 0x9C, 0x50, 0x53, 0x51, 0x52, 0x55, 0x56, 0x57, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC,
 			0x28, 0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x4D, 0x31, 0xC0, 0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
-			0xD0, 0x48, 0x83, 0xC4, 0x28, 0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5F, 0x5E, 0x5D, 0x5A, 0x59, 0x5B, 0x58, 0x9D, 0xc3 };
+			0xD0, 0x48, 0x83, 0xC4, 0x28, 0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x41, 0x5B, 0x41, 0x5A, 0x41, 0x59, 0x41, 0x58, 0x5F, 0x5E, 0x5D, 0x5A, 0x59, 0x5B, 0x58, 0x9D, 0xC3 };
 
 			*reinterpret_cast<u64*>(&shellcode[30]) = allocation_base;
 			*reinterpret_cast<u64*>(&shellcode[50]) = allocation_base + nt->optional_header.entry_point - headers_size;
 
-			io::log<debug>("entry {:x}", allocation_base + nt->optional_header.entry_point - headers_size);
+			io::log<debug>("entry point {:x}", allocation_base + nt->optional_header.entry_point - headers_size);
 
 			uintptr_t shellcode_base;
 			alloc(&shellcode_base, shellcode.size(), MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
 
 			io::log<log_lvl::info>("writing shellcode at {:x}...", shellcode_base);
+
+			std::vector<u8> save_ret = { 0x48, 0xA3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+
+			u32 ret_offset = 0;
+			*reinterpret_cast<u64*>(&save_ret[2]) = shellcode_base + ret_offset;
+
+			shellcode.insert(shellcode.begin() + 0x3a + 2, save_ret.begin(), save_ret.end());
 
 			write(shellcode_base, shellcode.data(), shellcode.size());
 
@@ -548,9 +566,22 @@ namespace process {
 					t.resume();
 
 					close(t.handle);
+
 					break;
 				}
 			}
+
+			io::log<log_lvl::info>("waiting for dll main call...");
+			u8 ret_code = -1;
+			while (ret_code != 0 && ret_code != 1) {
+				read(shellcode_base, &ret_code, sizeof(ret_code));
+
+				std::this_thread::sleep_for(1s);
+			}
+
+			free(shellcode_base, shellcode.size());
+
+			io::log<log_lvl::debug>("Dll main returned {}.", ret_code);
 
 			io::log<log_lvl::info>("mapped target image");
 
